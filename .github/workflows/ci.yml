@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20, 22]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Syntax check
+        run: |
+          node --check src/server.js
+          node --check public/app.js
+
+      - name: Start server
+        run: |
+          npm start > server.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3000/api/health && exit 0
+            sleep 1
+          done
+          echo "Server did not start"; cat server.log; exit 1
+
+      - name: Smoke test API
+        run: |
+          set -e
+          echo "--- /api/health"
+          curl -sf http://localhost:3000/api/health | tee /dev/stderr | grep -q '"status":"ok"'
+
+          echo "--- /api/hello?name=CI"
+          curl -sf "http://localhost:3000/api/hello?name=CI" | tee /dev/stderr | grep -q '"message":"Hello, CI!"'
+
+          echo "--- / (static index)"
+          curl -sf http://localhost:3000/ | grep -q '<title>MCP Server Lab</title>'
+
+          echo "--- 404 handling"
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/nope)
+          test "$code" = "404"
+
+          echo "All checks passed"
+
+      - name: Server log
+        if: always()
+        run: cat server.log || true
